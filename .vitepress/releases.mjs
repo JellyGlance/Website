@@ -11,7 +11,11 @@ const USER_AGENT = "JellyGlance-docs";
 const REQUEST_TIMEOUT_MS = 8000;
 
 const configDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(configDir, "../..");
+// The site used to live in the JellyGlance app repo and read the app's
+// package.json, release notes files and git tags from there. As a standalone
+// repo, the GitHub releases API is the source of truth; these local fallbacks
+// only apply if the files exist alongside the site.
+const repoRoot = resolve(configDir, "..");
 const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
 const packageVersion = String(rootPackage.version || "").replace(/-.+$/, "") || "0.0.0";
 

@@ -1,5 +1,5 @@
 {
-  "name": "@jellyglance/site",
+  "name": "jellyglance-website",
   "version": "1.2.8",
   "private": true,
   "type": "module",
@@ -17,5 +17,10 @@
       "vite": "6.4.3"
     },
     "source-map-js": "1.2.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JellyGlance/Website.git"
+  },
+  "homepage": "https://jellyglance.com/"
 }
