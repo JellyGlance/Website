@@ -1,5 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,16 +10,12 @@ const USER_AGENT = "JellyGlance-docs";
 const REQUEST_TIMEOUT_MS = 8000;
 
 const configDir = dirname(fileURLToPath(import.meta.url));
-// The site used to live in the JellyGlance app repo and read the app's
-// package.json, release notes files and git tags from there. As a standalone
-// repo, the GitHub releases API is the source of truth; these local fallbacks
-// only apply if the files exist alongside the site.
+// The site's own package.json version is only used for the local offline
+// fallback below; real release data always comes from GitHub.
 const repoRoot = resolve(configDir, "..");
 const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
 const packageVersion = String(rootPackage.version || "").replace(/-.+$/, "") || "0.0.0";
 
-const STABLE_FILES = [".github/release.md", ".github/RELEASE"];
-const BETA_FILES = [".github/release-beta.md", ".github/RELEASE.beta", ".github/RELEASE.BETA"];
 
 function githubToken() {
   return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
@@ -165,79 +160,6 @@ export function parseReleaseNotes(body = "") {
   return html.length > markdown.length ? html : markdown;
 }
 
-function readReleaseFile(relativePath) {
-  const filePath = resolve(repoRoot, relativePath);
-  if (!existsSync(filePath)) return null;
-
-  const raw = readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  const parts = raw.split(/^---\s*$/m);
-  const header = parts.shift() || "";
-  const body = parts.join("---").trim();
-  const meta = {};
-
-  for (const line of header.split("\n")) {
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.+)$/);
-    if (match) meta[match[1].toLowerCase()] = match[2].trim();
-  }
-
-  const version = String(meta.version || "").trim();
-  if (!version) return null;
-
-  return normalizeRelease({
-    version,
-    name: meta.title || `JellyGlance ${version}`,
-    url: `${RELEASES_URL}/tag/${version.startsWith("v") ? version : `v${version}`}`,
-    publishedAt: null,
-    body,
-    prerelease: isPrereleaseTag(version)
-  });
-}
-
-function bestFileRelease(paths) {
-  return paths
-    .map(readReleaseFile)
-    .filter(Boolean)
-    .sort((left, right) => compareVersions(right.version, left.version))[0] || null;
-}
-
-function localGitReleases() {
-  try {
-    const output = execFileSync("git", ["tag", "--sort=-v:refname"], {
-      cwd: repoRoot,
-      encoding: "utf8"
-    });
-    return output
-      .split("\n")
-      .map((tag) => tag.trim())
-      .filter((tag) => /^v?\d+\.\d+/.test(tag))
-      .map((tag) =>
-        normalizeRelease({
-          version: tag,
-          name: `JellyGlance ${tag.startsWith("v") ? tag : `v${tag}`}`,
-          url: `${RELEASES_URL}/tag/${tag.startsWith("v") ? tag : `v${tag}`}`,
-          publishedAt: null,
-          body: "",
-          prerelease: isPrereleaseTag(tag)
-        })
-      )
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function withFileBody(release) {
-  if (!release || release.body) return release;
-  const files = release.prerelease ? BETA_FILES : STABLE_FILES;
-  for (const path of files) {
-    const file = readReleaseFile(path);
-    if (file && compareVersions(file.version, release.version) === 0) {
-      return { ...release, body: file.body, sections: file.sections, name: file.name || release.name };
-    }
-  }
-  return release;
-}
-
 function pickStable(releases) {
   return releases
     .filter((release) => !release.prerelease)
@@ -263,15 +185,14 @@ function emptyBeta() {
   };
 }
 
-function fileFallbackPair() {
-  const stable = bestFileRelease(STABLE_FILES) || normalizeRelease({
+function offlineFallbackPair() {
+  const stable = normalizeRelease({
     version: `v${packageVersion}`,
     name: `JellyGlance v${packageVersion}`,
     url: `${RELEASES_URL}/latest`,
     body: "Release notes are loaded from the latest GitHub release when the site is built."
   });
-  const beta = pickNewerBeta([bestFileRelease(BETA_FILES)].filter(Boolean), stable);
-  return { latestRelease: stable, latestBetaRelease: beta || emptyBeta() };
+  return { latestRelease: stable, latestBetaRelease: emptyBeta() };
 }
 
 async function fetchApiReleases() {
@@ -339,33 +260,45 @@ async function fetchAtomReleases() {
 }
 
 function pairFromList(releases) {
-  const stable = withFileBody(pickStable(releases));
-  const beta = withFileBody(pickNewerBeta(releases, stable));
-  if (!stable) return fileFallbackPair();
+  const stable = pickStable(releases);
+  const beta = pickNewerBeta(releases, stable);
+  if (!stable) throw new Error("no stable release found");
   return {
     latestRelease: stable,
     latestBetaRelease: beta || emptyBeta()
   };
 }
 
+function isCI() {
+  return Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
+}
+
 export async function getDocsReleases() {
+  const errors = [];
+
   try {
     return pairFromList(await fetchApiReleases());
   } catch (error) {
+    errors.push(`API: ${error.message}`);
     console.warn(`[docs] GitHub releases API failed, trying public feed: ${error.message}`);
   }
 
   try {
     return pairFromList(await fetchAtomReleases());
   } catch (error) {
-    console.warn(`[docs] GitHub releases feed failed, trying local tags: ${error.message}`);
+    errors.push(`feed: ${error.message}`);
+    console.warn(`[docs] GitHub releases feed failed: ${error.message}`);
   }
 
-  const tags = localGitReleases();
-  if (tags.length) {
-    return pairFromList(tags);
+  if (isCI()) {
+    // Fail the deploy rather than publish a stale version; the last good
+    // deploy stays live until GitHub answers again.
+    throw new Error(
+      `[docs] Could not load JellyGlance releases from GitHub (${errors.join("; ")}). ` +
+        "Failing the build so the last good deploy stays up. Re-run the workflow once GitHub is reachable."
+    );
   }
 
-  console.warn("[docs] Using release file fallback");
-  return fileFallbackPair();
+  console.warn(`[docs] Using offline fallback v${packageVersion}. This is a local build only; CI would fail here.`);
+  return offlineFallbackPair();
 }
