@@ -21,7 +21,8 @@ export default defineConfig({
   cleanUrls: true,
   srcExclude: ["README.md"],
   head: [
-    ["script", { defer: "", "data-domain": "jellyglance.com", src: "https://track.nerdytech.dev/js/script.js" }],
+    ["script", { async: "", src: "https://track.nerdytech.dev/js/pa-2nLarLPGZC9irldsqVRG_.js" }],
+    ["script", {}, "window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()"],
     ["link", { rel: "icon", href: withBase("/favicon.ico") }],
     ["link", { rel: "apple-touch-icon", sizes: "180x180", href: withBase("/apple-touch-icon.png") }],
     ["link", { rel: "icon", type: "image/png", sizes: "192x192", href: withBase("/icon-b-192.png") }],
